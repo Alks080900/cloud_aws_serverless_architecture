@@ -1,0 +1,70 @@
+Resources:
+  ReactAppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: python-react-app-bucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReactAppBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${ReactAppBucket.Arn}/*"
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - DomainName: !GetAtt ReactAppBucket.DomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: allow-all
+          AllowedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponsePagePath: "/index.html"
+            ResponseCode: 200
+            ErrorCachingMinTTL: 300
+          - ErrorCode: 404
+            ResponsePagePath: "/index.html"
+            ResponseCode: 200
+            ErrorCachingMinTTL: 300
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        PriceClass: PriceClass_100
+
+Outputs:
+  ReactAppBucketName:
+    Description: "Name of the S3 bucket for React app hosting"
+    Value: !Ref ReactAppBucket
+
+  CloudFrontDistributionDomainName:
+    Description: "Domain name of the CloudFront distribution"
+    Value: !GetAtt CloudFrontDistribution.DomainName
+

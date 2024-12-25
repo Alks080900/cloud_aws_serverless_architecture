@@ -1,0 +1,379 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for deploying a web app with S3, CloudFront, DynamoDB, Lambda, and API Gateway.
+
+Resources:
+  ReactAppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: ["ETag"]
+
+  ReactAppBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReactAppBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:*"
+            Resource: !Sub "${ReactAppBucket.Arn}/*"
+
+  AdditionalBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: ["ETag"]
+
+  AdditionalBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AdditionalBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:*"
+            Resource: !Sub "${AdditionalBucket.Arn}/*"
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Origins:
+          - Id: ReactAppOrigin
+            DomainName: !GetAtt ReactAppBucket.DomainName
+            S3OriginConfig: {}
+        DefaultCacheBehavior:
+          TargetOriginId: ReactAppOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: ["GET", "HEAD"]
+          CachedMethods: ["GET", "HEAD"]
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        DefaultRootObject: "index.html"
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponsePagePath: "/index.html"
+            ResponseCode: 200
+            ErrorCachingMinTTL: 300
+          - ErrorCode: 404
+            ResponsePagePath: "/index.html"
+            ResponseCode: 200
+            ErrorCachingMinTTL: 300
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: "UsersTest"
+      AttributeDefinitions:
+        - AttributeName: "email"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "email"
+          KeyType: "HASH"
+      BillingMode: PAY_PER_REQUEST
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaBasicExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: "*"
+
+  AppTestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "AppTestFunction"
+      Handler: "index.handler"
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs20.x
+      Code:
+        ZipFile: "exports.handler = async (event) => { return 'Lambda Function Created'; };"  # Minimal inline code
+      Environment:
+        Variables:
+          table_name: !Ref UsersTable
+          bucket_name: !Ref AdditionalBucket
+          region: "us-east-1"
+
+  AppApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: "AppApi"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  SignupResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !GetAtt AppApi.RootResourceId
+      PathPart: "signup"
+
+  LoginResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !GetAtt AppApi.RootResourceId
+      PathPart: "login"
+
+  UpdateProfileImageResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !GetAtt AppApi.RootResourceId
+      PathPart: "updateProfileImage"
+
+  SignupPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref SignupResource
+      HttpMethod: "POST"
+      AuthorizationType: "NONE"
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: "POST"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AppTestFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+
+  LoginPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref LoginResource
+      HttpMethod: "POST"
+      AuthorizationType: "NONE"
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: "POST"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AppTestFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+
+  UpdatePutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref UpdateProfileImageResource
+      HttpMethod: "PUT"
+      AuthorizationType: "NONE"
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: "POST"
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AppTestFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  # CORS Options Methods for Signup, Login, and UpdateProfileImage
+  SignupOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref SignupResource
+      HttpMethod: "OPTIONS"
+      AuthorizationType: "NONE"
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: "{\"statusCode\": 200}"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+
+  SignupOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref SignupResource
+      HttpMethod: "OPTIONS"
+      AuthorizationType: "NONE"
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: "{\"statusCode\": 200}"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+
+  LoginOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref LoginResource
+      HttpMethod: "OPTIONS"
+      AuthorizationType: "NONE"
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: "{\"statusCode\": 200}"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+
+  UpdateOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AppApi
+      ResourceId: !Ref UpdateProfileImageResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,PUT'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  LambdaPermissionSignup:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AppTestFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AppApi}/*/POST/signup"
+
+  LambdaPermissionLogin:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AppTestFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AppApi}/*/POST/login"
+
+  LambdaPermissionUpdate:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AppTestFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AppApi}/*/PUT/updateProfileImage"
+
+  AppApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [SignupPostMethod, LoginPostMethod, UpdatePutMethod, SignupOptionsMethod, LoginOptionsMethod, UpdateOptionsMethod]
+    Properties:
+      RestApiId: !Ref AppApi
+      StageName: "prod"
+
+Outputs:
+  AdditionalBucketName:
+    Description: "Name of the additional S3 bucket"
+    Value: !Ref AdditionalBucket
+
+  ReactAppBucketName:
+    Description: "Name of the React App S3 bucket"
+    Value: !Ref ReactAppBucket
+
+  UsersTableName:
+    Description: "DynamoDB Users Table Name"
+    Value: !Ref UsersTable
+
+  LambdaExecutionRoleArn:
+    Description: "ARN of the Lambda Execution Role"
+    Value: !GetAtt LambdaExecutionRole.Arn
+
+  CloudFrontDistributionId:
+    Description: "ID of the CloudFront Distribution"
+    Value: !Ref CloudFrontDistribution
+
+  AppApiUrl:
+    Description: "URL of the API Gateway for the App"
+    Value: !Sub "https://${AppApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
