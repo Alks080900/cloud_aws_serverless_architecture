@@ -1,6 +1,6 @@
 # Full-Stack Authentication Application
 
-Hello! My name is **Alexander C. Oblego**, and this project is part of my final project for CS516-2024. My student ID is **618046**. The main project here is focused on **infra-using-nodejs**, while the **infra-using-python** folder is only for experimentation purposes.
+This project demonstrates a full automation building of simple web app using cloudformation, the project is highly customizable and the scripts below can be revise based on your own setup of its building process.
 
 ## Project Overview
 
